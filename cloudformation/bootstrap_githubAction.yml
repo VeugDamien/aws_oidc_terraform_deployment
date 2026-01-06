@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'GitHub OIDC Identity Provider and Role for GitHub Actions'
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Description: GitHub repository name
+    AllowedPattern: '^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$'
+    ConstraintDescription: Must be in the format 'user/repo' (e.g., myuser/myrepo)
+    
+Resources:
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: Name
+          Value: GitHubOIDCProvider
+    DeletionPolicy: Retain
+
+  GitHubActionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: githubAction
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubRepo}:*'
+    DeletionPolicy: Retain
+
+  GithubActionTerraformStatePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties: 
+      PolicyName: githubActionTerraformState
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource: !GetAtt TerraformStateBucket.Arn
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource: !Sub '${TerraformStateBucket.Arn}/*'
+      RoleName: !Ref GitHubActionRole
+
+  GithubActionTerraformDeploymentPolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties: 
+      PolicyName: githubActionTerraformDeployment
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - "*"
+            Resource: "*"
+      RoleName: !Ref GitHubActionRole
+
+  TerraformStateBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 
+        - '${RepoName}TerraformState'
+        - RepoName: !Select [1, !Split ['/', !Ref GitHubRepo]]
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+    DeletionPolicy: Retain
+
+Outputs:
+  GitHubOIDCProviderArn:
+    Description: ARN of the GitHub OIDC Provider
+    Value: !Ref GitHubOIDCProvider
+    Export:
+      Name: !Sub '${AWS::StackName}-GitHubOIDCProvider'
+  
+  GitHubActionsRoleArn:
+    Description: ARN of the GitHub Actions Role
+    Value: !GetAtt GitHubActionsRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-GitHubActionsRole'
+
+  TerraformStateBucketName:
+    Description: Name of the Terraform state S3 bucket
+    Value: !Ref TerraformStateBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-TerraformStateBucket'
